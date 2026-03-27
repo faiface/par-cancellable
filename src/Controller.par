@@ -1,0 +1,116 @@
+export module Controller
+
+import {
+  @core/Bool
+  @core/String
+  @core/Bytes
+  @core/List
+  @core/Map
+  Producer
+}
+
+export {
+  // `Controller` manages starting and cancelling independent producers.
+  //
+  // Use `Controller.FanIn` to turn the producers managed by the controller into
+  // a single list of events.
+  type Controller<k, a> = recursive either {
+    .shutdown!,
+    .start(k) choice {
+      .denied => self,
+      .accepted => (Producer<a>) self,
+    }
+    .cancel(k) self,
+  }
+
+  type Event<a> = either {
+    .ended!,
+    .cancelled!,
+    .other a,
+  }
+
+  dec FanIn : <k, a>[Controller<box k, a>] [box [List<(box k) Bool>] Map<box k, Bool>] List<(k) Event<a>>
+}
+
+def FanIn = <k, a>[ctrl] [newMap] do {
+  let cancelling = newMap(*())
+} in poll(Fan(ctrl)) {
+  client => client.case {
+    .shutdown! => do { cancelling.list } in repoll() {
+      client => client.case {
+        .shutdown! => submit(),
+        .start(_) client => submit(client.denied),
+        .cancel(_) client => submit(client),
+        .end id => .item((id) .ended!) submit(),
+        .item(id) client => let ! = client.cancel in .item((id) .cancelled!) submit(),
+      }
+      else => .end!,
+    }
+
+    .start(id) client => do {
+      cancelling.entry(id)[flag]
+    } in if {
+      flag is .ok flag => do { cancelling.put(flag) } in submit(client.denied),
+      else => do { cancelling.put(.false!); client.accepted[client1] } in submit(client, client1),
+    }
+
+    .cancel(id) client => do {
+      cancelling.entry(id)[flag]
+    } in if {
+      flag is .err! => do { cancelling.delete } in submit(client),
+      else => do { cancelling.put(.true!) } in submit(client),
+    }
+
+    .end id => do {
+      cancelling.entry(id)[_].delete
+    } in .item((id) .ended!) submit(),
+
+    .item(id) client => do {
+      cancelling.entry(id)[flag]
+    } in if {
+      flag is .ok flag and flag is .true! => do {
+        client.cancel
+        cancelling.delete
+      } in .item((id) .cancelled!) submit(),
+      else => do {
+        client.get[value]
+        cancelling.put(.false!)
+      } in .item((id) .other value) submit(client),
+    }
+  }
+
+  else => do { cancelling.list } in .end!,
+}
+
+type Fan<k, a> = recursive either {
+  .shutdown!,
+  .start(k) choice {
+    .denied => self,
+    .accepted => (self) self,
+  }
+  .cancel(k) self,
+
+  .end k,
+  .item(k) choice {
+    .cancel => !,
+    .get => (a) self,
+  }
+}
+
+dec Fan : <k, a>[Controller<box k, a>] Fan<k, a>
+def Fan = <k, a>[ctrl] ctrl.begin.case {
+  .shutdown! => .shutdown!,
+  .start(id) ctrl => .start(id) case {
+    .denied => ctrl.denied.loop,
+    .accepted => let (prod) ctrl = ctrl.accepted in (
+      prod.begin.case {
+        .end! => .end id,
+        .item prod => .item(id) case {
+          .cancel => prod.cancel,
+          .get => let (value) prod = prod.get in (value) prod.loop,
+        }
+      }
+    ) ctrl.loop,
+  }
+  .cancel(id) ctrl => .cancel(id) ctrl.loop,
+}
