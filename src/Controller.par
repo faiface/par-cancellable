@@ -50,14 +50,14 @@ def FanIn = <k, a>[ctrl] [newMap] do {
     .start(id) client => do {
       cancelling.entry(id)[flag]
     } in if {
-      flag is .ok flag => do { cancelling.put(flag) } in submit(client.denied),
+      flag is .some flag => do { cancelling.put(flag) } in submit(client.denied),
       else => do { cancelling.put(.false!); client.accepted[client1] } in submit(client, client1),
     }
 
     .cancel(id) client => do {
       cancelling.entry(id)[flag]
     } in if {
-      flag is .err! => do { cancelling.delete } in submit(client),
+      flag is .none! => do { cancelling.delete } in submit(client),
       else => do { cancelling.put(.true!) } in submit(client),
     }
 
@@ -68,7 +68,7 @@ def FanIn = <k, a>[ctrl] [newMap] do {
     .item(id) client => do {
       cancelling.entry(id)[flag]
     } in if {
-      flag is .ok flag and flag is .true! => do {
+      flag is .some flag and flag is .true! => do {
         client.cancel
         cancelling.delete
       } in .item((id) .cancelled!) submit(),
